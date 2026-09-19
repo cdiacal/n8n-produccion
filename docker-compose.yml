@@ -45,6 +45,11 @@ x-n8n-common: &n8n-common
     N8N_RUNNERS_ENABLED: "true"
     N8N_DIAGNOSTICS_ENABLED: "false"
     N8N_METRICS: "true"
+    # Por defecto n8n se rinde a los 30s esperando ejecuciones activas y
+    # se apaga igual, aunque Docker le dé más margen (stop_grace_period
+    # de más abajo). Verificado: con solo stop_grace_period, una
+    # ejecución de ~90s se pierde igual a los 30s.
+    N8N_GRACEFUL_SHUTDOWN_TIMEOUT: "150"
     GENERIC_TIMEZONE: ${TZ}
     TZ: ${TZ}
   volumes:
@@ -110,6 +115,13 @@ services:
   n8n-worker:
     <<: *n8n-common
     command: worker --concurrency=${WORKER_CONCURRENCY}
+    # Sin esto, Docker mata el contenedor 1s después del SIGTERM en vez
+    # de los 10s "de siempre" (verificado: en Docker Engine 29.5.2 el
+    # timeout por defecto ya es 1s, no 10 — hasta con `docker run` suelto).
+    # Un segundo no basta ni para una ejecución corta; con esto, una
+    # ejecución en curso tiene margen real para terminar en un
+    # `docker compose up -d --scale` o `down`.
+    stop_grace_period: 160s
     deploy:
       replicas: ${WORKER_REPLICAS}
     depends_on:

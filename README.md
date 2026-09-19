@@ -122,6 +122,8 @@ Lee siempre las notas de la versión. n8n publica versión menor casi cada seman
 
 **Pruning activado.** La tabla de ejecuciones crece sin límite. Es la causa número uno de instancias que se quedan sin disco.
 
+**`stop_grace_period: 160s` en los workers, y `N8N_GRACEFUL_SHUTDOWN_TIMEOUT: 150` en los tres servicios.** Sin esto, una ejecución en curso se pierde al escalar o parar workers — y no es un solo problema, son dos, verificados por separado: el propio Docker (en la versión probada) mata el contenedor 1 segundo después del `SIGTERM`, no los 10 "de siempre"; y aunque le des más margen a Docker, n8n tiene su propio límite interno de 30s esperando ejecuciones activas antes de apagarse igual. Hacen falta los dos ajustes a la vez.
+
 ---
 
 ## Puesto a prueba
@@ -135,6 +137,8 @@ Esto no es teoría: se rompió a propósito en local (Docker Desktop, todavía s
 **Cortar Redis.** Esto tira el stack entero, no solo las ejecuciones. En modo cola, `n8n-main` necesita Redis para arrancar y seguir vivo: sin conexión, hace `Exiting process due to Redis connection error` a los 10s y entra en bucle de reinicio junto con worker y webhook. Redis no es "solo la cola" en este despliegue — es una dependencia dura de los tres procesos, editor incluido. Se recupera solo, sin tocar nada, unos 4 segundos después de que Redis vuelve.
 
 **Llenar el disco.** Probado con un Postgres aislado (mismo `postgres:17-alpine`, en un disco de 200MB aparte, sin tocar datos reales). Al llenarse: `ERROR: could not extend file... No space left on device`. Postgres no se corrompe ni se cae — rechaza la escritura que no cabe, pero los datos ya guardados siguen íntegros y legibles. Es la razón de fondo del pruning de más arriba: el fallo por disco lleno es ruidoso, no silencioso, pero solo si no dejas que la tabla de ejecuciones crezca sin límite primero.
+
+**Ejecución larga durante un escalado de workers.** Con una tarea que ocupa al worker de verdad (un HTTP Request real de ~60-100s contra un servidor de prueba, no un nodo Wait —libera el worker al instante— ni un nodo Code con espera bloqueante —revienta por su cuenta, sin relación con Docker—), escalar `n8n-worker` o pararlo perdía la ejecución en curso, huérfana en estado `running` para siempre, sin marcarla siquiera como fallida. Dos causas independientes, verificadas por separado: **(1)** en la versión de Docker Engine usada en la prueba (29.5.2), el timeout por defecto tras `SIGTERM` es 1 segundo, no los 10 tradicionales — confirmado hasta con un `docker run` suelto sin Compose de por medio; **(2)** aunque le des a Docker todo el margen del mundo con `stop_grace_period`, n8n se rinde solo a los 30 segundos esperando ejecuciones activas y se apaga igual. Con `stop_grace_period: 160s` y `N8N_GRACEFUL_SHUTDOWN_TIMEOUT: 150` puestos a la vez, la misma prueba (ejecución de 60s, worker parado a mitad) acaba en `success`, sin pérdidas.
 
 ---
 
