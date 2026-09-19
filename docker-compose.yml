@@ -1,0 +1,163 @@
+---
+# n8n en modo cola (queue mode) para producción.
+# Arquitectura: main (UI/API) + workers (ejecución) + webhook processor (webhooks de producción)
+# Estado compartido: PostgreSQL (datos) + Redis (cola)
+
+x-n8n-common: &n8n-common
+  image: n8nio/n8n:${N8N_VERSION}
+  restart: unless-stopped
+  environment: &n8n-env
+    # --- Modo cola ---
+    EXECUTIONS_MODE: queue
+    QUEUE_BULL_REDIS_HOST: redis
+    QUEUE_BULL_REDIS_PORT: 6379
+    QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
+    QUEUE_HEALTH_CHECK_ACTIVE: "true"
+
+    # --- Base de datos ---
+    DB_TYPE: postgresdb
+    DB_POSTGRESDB_HOST: postgres
+    DB_POSTGRESDB_PORT: 5432
+    DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+    DB_POSTGRESDB_USER: ${POSTGRES_USER}
+    DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+    # --- Cifrado ---
+    # CRÍTICO: idéntica en main, workers y webhook. Si difiere, las credenciales
+    # guardadas dejan de descifrarse y los workflows fallan en silencio.
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+    # --- URLs públicas ---
+    N8N_HOST: ${N8N_HOST}
+    N8N_PORT: 5678
+    N8N_PROTOCOL: https
+    N8N_EDITOR_BASE_URL: https://${N8N_HOST}
+    WEBHOOK_URL: https://${N8N_HOST}
+    N8N_PROXY_HOPS: 1
+
+    # --- Retención de datos ---
+    EXECUTIONS_DATA_PRUNE: "true"
+    EXECUTIONS_DATA_MAX_AGE: ${EXECUTIONS_DATA_MAX_AGE}
+    EXECUTIONS_DATA_PRUNE_MAX_COUNT: ${EXECUTIONS_DATA_PRUNE_MAX_COUNT}
+    N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+
+    # --- Runtime ---
+    N8N_RUNNERS_ENABLED: "true"
+    N8N_DIAGNOSTICS_ENABLED: "false"
+    N8N_METRICS: "true"
+    GENERIC_TIMEZONE: ${TZ}
+    TZ: ${TZ}
+  volumes:
+    - n8n_data:/home/node/.n8n
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - n8n
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - n8n
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # noeviction es obligatorio: Bull (la cola de n8n) pierde trabajos si Redis
+    # empieza a expulsar claves bajo presión de memoria.
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory-policy noeviction
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - n8n
+
+  n8n-main:
+    <<: *n8n-common
+    command: start
+    environment:
+      <<: *n8n-env
+      # Los webhooks de producción los atiende el procesador dedicado, no el main.
+      N8N_DISABLE_PRODUCTION_MAIN_PROCESS: "true"
+    expose:
+      - "5678"
+
+  n8n-worker:
+    <<: *n8n-common
+    command: worker --concurrency=${WORKER_CONCURRENCY}
+    deploy:
+      replicas: ${WORKER_REPLICAS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n-main:
+        condition: service_started
+
+  n8n-webhook:
+    <<: *n8n-common
+    command: webhook
+    expose:
+      - "5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n-main:
+        condition: service_started
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      N8N_HOST: ${N8N_HOST}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n-main
+      - n8n-webhook
+    networks:
+      - n8n
+
+volumes:
+  n8n_data:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  n8n:
+    driver: bridge

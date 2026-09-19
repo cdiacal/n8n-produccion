@@ -1,0 +1,30 @@
+{$N8N_HOST} {
+	encode zstd gzip
+
+	# Los webhooks de producción van al procesador dedicado.
+	# Esto es lo que evita que una tanda de webhooks bloquee el editor.
+	@webhooks path /webhook/* /webhook-waiting/* /form/* /form-waiting/*
+	handle @webhooks {
+		reverse_proxy n8n-webhook:5678
+	}
+
+	# Todo lo demás (editor, API, webhooks de test) al main.
+	handle {
+		reverse_proxy n8n-main:5678
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}
