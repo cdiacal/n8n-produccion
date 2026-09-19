@@ -60,7 +60,7 @@ El disco es lo que más se subestima. Con pruning activado, 50 GB aguantan bien;
 ## Arranque
 
 ```bash
-git clone https://github.com/TU-USUARIO/n8n-produccion.git
+git clone https://github.com/cdiacal/n8n-produccion.git
 cd n8n-produccion
 
 chmod +x scripts/*.sh
