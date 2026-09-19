@@ -80,13 +80,15 @@ docker compose up -d
 
 ## Operación
 
-**Escalar workers.** Sube `WORKER_REPLICAS` en `.env` y aplica:
+**Escalar workers.** Cambia `WORKER_REPLICAS` en `.env` y aplica:
 
 ```bash
-docker compose up -d --scale n8n-worker=4
+docker compose up -d
 ```
 
 Mide antes de escalar. Si la cola crece pero la CPU está ociosa, el cuello no son los workers: es una API externa lenta o un workflow mal hecho.
+
+**`--scale` en la línea de comandos no es persistente.** Probado: `docker compose up -d --scale n8n-worker=4` sí levanta 4 workers, pero el siguiente `docker compose up -d` sin `--scale` —el mismo que usarías para actualizar de versión, más abajo— los vuelve a bajar a lo que diga `WORKER_REPLICAS` en `.env`, deteniendo y eliminando los contenedores de más sin avisar. `WORKER_REPLICAS` y `--scale` se pisan entre sí; para un cambio que dure, edita `.env`.
 
 **Ver el estado de la cola:**
 
@@ -119,6 +121,20 @@ Lee siempre las notas de la versión. n8n publica versión menor casi cada seman
 **Versión fijada.** Nada de `:latest`. Un reinicio no debería cambiarte de versión.
 
 **Pruning activado.** La tabla de ejecuciones crece sin límite. Es la causa número uno de instancias que se quedan sin disco.
+
+---
+
+## Puesto a prueba
+
+Esto no es teoría: se rompió a propósito en local (Docker Desktop, todavía sin VPS) y esto es lo que pasó de verdad.
+
+**Matar un worker con `docker kill` (SIGKILL).** El otro worker siguió sirviendo sin corte. Pero el contenedor muerto no volvió solo pese a `restart: unless-stopped` — verificado también con un contenedor de control vacío, así que es un comportamiento de la versión de Docker usada en la prueba (Docker Desktop 4.75.0, engine 29.5.2), no del compose en sí. Si tu entorno tiene la misma limitación, un worker muerto se queda muerto hasta que alguien corra `docker compose up -d`.
+
+**Saturar la cola.** Con un workflow real activo, 60 peticiones simultáneas a su webhook hicieron crecer `bull:jobs:wait` hasta 50 pendientes. Drenó sola, sin perder ninguna: 101/101 ejecuciones acabaron `finished=true`, cero errores. Mientras la cola estaba a 50, el editor (`n8n-main`) siguió respondiendo en 9-15ms — la separación webhook/main hace lo que promete.
+
+**Cortar Redis.** Esto tira el stack entero, no solo las ejecuciones. En modo cola, `n8n-main` necesita Redis para arrancar y seguir vivo: sin conexión, hace `Exiting process due to Redis connection error` a los 10s y entra en bucle de reinicio junto con worker y webhook. Redis no es "solo la cola" en este despliegue — es una dependencia dura de los tres procesos, editor incluido. Se recupera solo, sin tocar nada, unos 4 segundos después de que Redis vuelve.
+
+**Llenar el disco.** Probado con un Postgres aislado (mismo `postgres:17-alpine`, en un disco de 200MB aparte, sin tocar datos reales). Al llenarse: `ERROR: could not extend file... No space left on device`. Postgres no se corrompe ni se cae — rechaza la escritura que no cabe, pero los datos ya guardados siguen íntegros y legibles. Es la razón de fondo del pruning de más arriba: el fallo por disco lleno es ruidoso, no silencioso, pero solo si no dejas que la tabla de ejecuciones crezca sin límite primero.
 
 ---
 

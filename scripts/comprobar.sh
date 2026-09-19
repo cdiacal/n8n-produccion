@@ -47,7 +47,7 @@ echo
 echo "Clave de cifrado"
 claves="$(for s in n8n-main n8n-worker n8n-webhook; do
 	docker compose exec -T "$s" printenv N8N_ENCRYPTION_KEY 2>/dev/null
-done | sort -u | wc -l)"
+done | sort -u | wc -l | tr -d ' ')"
 if [[ "$claves" == "1" ]]; then
 	ok "idéntica en main, worker y webhook"
 else
